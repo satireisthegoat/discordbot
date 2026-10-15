@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 TOKEN = os.environ.get("DISCORD_TOKEN")
-   CONFIG_FILE = Path("/data/config.json")
+CONFIG_FILE = Path("/data/config.json")
 
 # Digits only. Change this regex if you want to allow decimals/negatives,
 # e.g. r"^-?\d+(\.\d+)?$"
