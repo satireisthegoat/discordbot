@@ -14,6 +14,16 @@ CONFIG_FILE = Path("/data/config.json")
 # e.g. r"^-?\d+(\.\d+)?$"
 NUMBERS_ONLY = re.compile(r"^\d+$")
 
+# ---------- boost reactions ----------
+BOOST_CHANNEL_ID = 1544838991973580940
+BOOST_EMOJI = discord.PartialEmoji(name="559271milkheart", id=1548041621084442674)
+BOOST_TYPES = {
+    discord.MessageType.premium_guild_subscription,
+    discord.MessageType.premium_guild_tier_1,
+    discord.MessageType.premium_guild_tier_2,
+    discord.MessageType.premium_guild_tier_3,
+}
+
 intents = discord.Intents.default()
 intents.message_content = True  # must also be enabled in the Developer Portal
 
@@ -75,6 +85,14 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
+    # React to server boost announcements in the boost channel
+    if message.channel.id == BOOST_CHANNEL_ID and message.type in BOOST_TYPES:
+        try:
+            await message.add_reaction(BOOST_EMOJI)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        return
+
     await enforce(message)
 
 
