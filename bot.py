@@ -258,6 +258,140 @@ async def status(interaction: discord.Interaction):
 bot.tree.add_command(numbers)
 
 
+# ---------- automod: word management helpers ----------
+def parse_words(raw: str) -> list[str]:
+    """Split on commas or new lines, lowercase, trim, and remove duplicates."""
+    seen = set()
+    words = []
+    for part in re.split(r"[,\n]", raw):
+        word = part.strip().lower()
+        if word and word not in seen:
+            seen.add(word)
+            words.append(word)
+    return words
+
+
+def add_words_to_blacklist(guild_id: int, raw: str) -> tuple[list[str], list[str]]:
+    cfg = guild_cfg(guild_id)
+    existing = set(cfg["blacklist"])
+    added, skipped = [], []
+    for word in parse_words(raw):
+        if word in existing:
+            skipped.append(word)
+        else:
+            cfg["blacklist"].append(word)
+            added.append(word)
+    if added:
+        save_config(config)
+    return added, skipped
+
+
+def remove_words_from_blacklist(guild_id: int, raw: str) -> tuple[list[str], list[str]]:
+    cfg = guild_cfg(guild_id)
+    removed, missing = [], []
+    for word in parse_words(raw):
+        if word in cfg["blacklist"]:
+            cfg["blacklist"].remove(word)
+            removed.append(word)
+        else:
+            missing.append(word)
+    if removed:
+        save_config(config)
+    return removed, missing
+
+
+def fmt(words: list[str]) -> str:
+    return ", ".join(f"`{w}`" for w in words)
+
+
+def add_result_text(added: list[str], skipped: list[str]) -> str:
+    if not added and not skipped:
+        return "❌ I didn't find any words in that."
+    lines = []
+    if added:
+        lines.append(f"✅ Added ({len(added)}): {fmt(added)}")
+    if skipped:
+        lines.append(f"Already on the list: {fmt(skipped)}")
+    return "\n".join(lines)[:2000]
+
+
+def remove_result_text(removed: list[str], missing: list[str]) -> str:
+    if not removed and not missing:
+        return "❌ I didn't find any words in that."
+    lines = []
+    if removed:
+        lines.append(f"✅ Removed ({len(removed)}): {fmt(removed)}")
+    if missing:
+        lines.append(f"Not on the list: {fmt(missing)}")
+    return "\n".join(lines)[:2000]
+
+
+def list_text(guild_id: int) -> str:
+    cfg = guild_cfg(guild_id)
+    if not cfg["blacklist"]:
+        return "The blacklist is empty."
+    words = fmt(sorted(cfg["blacklist"]))
+    return f"**Blacklisted words ({len(cfg['blacklist'])}):**\n{words}"[:2000]
+
+
+# ---------- automod: panel (buttons + pop-up forms) ----------
+class AddWordsModal(discord.ui.Modal, title="Add blacklisted words"):
+    words = discord.ui.TextInput(
+        label="Words (commas or new lines)",
+        style=discord.TextStyle.paragraph,
+        placeholder="word one, word two, a phrase",
+        required=True,
+        max_length=2000,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        added, skipped = add_words_to_blacklist(interaction.guild_id, self.words.value)
+        await interaction.response.send_message(
+            add_result_text(added, skipped), ephemeral=True
+        )
+
+
+class RemoveWordsModal(discord.ui.Modal, title="Remove blacklisted words"):
+    words = discord.ui.TextInput(
+        label="Words (commas or new lines)",
+        style=discord.TextStyle.paragraph,
+        placeholder="word one, word two",
+        required=True,
+        max_length=2000,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        removed, missing = remove_words_from_blacklist(interaction.guild_id, self.words.value)
+        await interaction.response.send_message(
+            remove_result_text(removed, missing), ephemeral=True
+        )
+
+
+class PanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=600)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.guild_permissions.manage_guild:
+            return True
+        await interaction.response.send_message(
+            "You need the Manage Server permission to use this.", ephemeral=True
+        )
+        return False
+
+    @discord.ui.button(label="Add words", style=discord.ButtonStyle.green, emoji="➕")
+    async def add_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AddWordsModal())
+
+    @discord.ui.button(label="Remove words", style=discord.ButtonStyle.red, emoji="➖")
+    async def remove_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(RemoveWordsModal())
+
+    @discord.ui.button(label="View list", style=discord.ButtonStyle.secondary, emoji="📋")
+    async def list_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(list_text(interaction.guild_id), ephemeral=True)
+
+
 # ---------- slash commands: automod ----------
 automod_group = app_commands.Group(
     name="automod",
@@ -267,54 +401,34 @@ automod_group = app_commands.Group(
 )
 
 
-@automod_group.command(name="add_word", description="Add a word or phrase to the blacklist")
-@app_commands.describe(word="The word or phrase to blacklist")
-async def add_word(interaction: discord.Interaction, word: str):
-    word = word.strip().lower()
-    if not word:
-        await interaction.response.send_message("❌ Please enter a word.", ephemeral=True)
-        return
-
-    cfg = guild_cfg(interaction.guild_id)
-    if word in cfg["blacklist"]:
-        await interaction.response.send_message(
-            f"`{word}` is already blacklisted.", ephemeral=True
-        )
-        return
-
-    cfg["blacklist"].append(word)
-    save_config(config)
-    await interaction.response.send_message(f"✅ Blacklisted `{word}`.", ephemeral=True)
+@automod_group.command(name="panel", description="Open the blacklist control panel")
+async def panel(interaction: discord.Interaction):
+    count = len(guild_cfg(interaction.guild_id)["blacklist"])
+    await interaction.response.send_message(
+        f"**Automod panel**\n{count} word(s) currently blacklisted. "
+        "Use the buttons below to add or remove words.",
+        view=PanelView(),
+        ephemeral=True,
+    )
 
 
-@automod_group.command(name="remove_word", description="Remove a word or phrase from the blacklist")
-@app_commands.describe(word="The word or phrase to remove")
-async def remove_word(interaction: discord.Interaction, word: str):
-    word = word.strip().lower()
-    cfg = guild_cfg(interaction.guild_id)
-    if word not in cfg["blacklist"]:
-        await interaction.response.send_message(
-            f"`{word}` isn't on the blacklist.", ephemeral=True
-        )
-        return
+@automod_group.command(name="add_word", description="Add one or more words (separate with commas)")
+@app_commands.describe(words="Words or phrases, separated by commas")
+async def add_word(interaction: discord.Interaction, words: str):
+    added, skipped = add_words_to_blacklist(interaction.guild_id, words)
+    await interaction.response.send_message(add_result_text(added, skipped), ephemeral=True)
 
-    cfg["blacklist"].remove(word)
-    save_config(config)
-    await interaction.response.send_message(f"✅ Removed `{word}`.", ephemeral=True)
+
+@automod_group.command(name="remove_word", description="Remove one or more words (separate with commas)")
+@app_commands.describe(words="Words or phrases, separated by commas")
+async def remove_word(interaction: discord.Interaction, words: str):
+    removed, missing = remove_words_from_blacklist(interaction.guild_id, words)
+    await interaction.response.send_message(remove_result_text(removed, missing), ephemeral=True)
 
 
 @automod_group.command(name="list_words", description="Show all blacklisted words")
 async def list_words(interaction: discord.Interaction):
-    cfg = guild_cfg(interaction.guild_id)
-    if not cfg["blacklist"]:
-        await interaction.response.send_message("The blacklist is empty.", ephemeral=True)
-        return
-
-    words = ", ".join(f"`{w}`" for w in sorted(cfg["blacklist"]))
-    await interaction.response.send_message(
-        f"**Blacklisted words ({len(cfg['blacklist'])}):**\n{words}"[:2000],
-        ephemeral=True,
-    )
+    await interaction.response.send_message(list_text(interaction.guild_id), ephemeral=True)
 
 
 bot.tree.add_command(automod_group)
