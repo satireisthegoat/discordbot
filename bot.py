@@ -27,6 +27,21 @@ BOOST_TYPES = {
 # ---------- automod ----------
 AUTOMOD_REPORT_CHANNEL_ID = 1561861985878937703
 
+# ---------- Q list ----------
+Q_CHANNEL_ID = 1560393413566930974
+QCHECK_ROLE_ID = 1545418339696771152
+QLIST_ALLOWED_ROLE_IDS = {
+    1545205609148850176,
+    1544841710968897617,
+    1545048463169818825,
+    1544841601849884672,
+    1560987977918709840,
+    1544841503950766137,
+    1545040101929656413,
+}
+QLIST_HISTORY_LIMIT = 5000  # how many recent messages to scan while looking for the ping
+Q_NUMBER = re.compile(r"[0-9]+")  # whole digits only (no spaces, signs, decimals, commas)
+
 intents = discord.Intents.default()
 intents.message_content = True  # must also be enabled in the Developer Portal
 
@@ -432,6 +447,108 @@ async def list_words(interaction: discord.Interaction):
 
 
 bot.tree.add_command(automod_group)
+
+
+# ---------- slash command: Q list ----------
+def is_qcheck_ping(message: discord.Message) -> bool:
+    """True if the message pings the @QCHECK role."""
+    if f"<@&{QCHECK_ROLE_ID}>" in message.content:
+        return True
+    return any(role.id == QCHECK_ROLE_ID for role in message.role_mentions)
+
+
+@bot.tree.command(
+    name="q-list",
+    description="Post the sorted list of numbers sent after the latest @QCHECK ping",
+)
+@app_commands.guild_only()
+async def q_list(interaction: discord.Interaction):
+    # Only the allowed roles can use this
+    user_role_ids = {r.id for r in getattr(interaction.user, "roles", [])}
+    if not user_role_ids & QLIST_ALLOWED_ROLE_IDS:
+        await interaction.response.send_message(
+            "You don't have permission to use this command.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer()  # reading history can take a few seconds
+
+    channel = bot.get_channel(Q_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(Q_CHANNEL_ID)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            await interaction.followup.send("❌ I can't find the Q channel.", ephemeral=True)
+            return
+
+    # Walk backwards (newest first) until we reach the most recent @QCHECK ping.
+    # The first number we see from each person is therefore their latest one.
+    entries: dict[int, tuple[int, object, str]] = {}
+    ping_found = False
+
+    try:
+        async for msg in channel.history(limit=QLIST_HISTORY_LIMIT):
+            if is_qcheck_ping(msg):
+                ping_found = True
+                break
+
+            if msg.author.bot:
+                continue
+            if msg.type not in (discord.MessageType.default, discord.MessageType.reply):
+                continue
+
+            content = msg.content.strip()
+            if not Q_NUMBER.fullmatch(content):
+                continue  # "8 people", "a1", "-5", "3.5", "1,000" etc. are ignored
+
+            number = int(content)
+            if number < 1:
+                continue  # 0 isn't allowed
+
+            if msg.author.id not in entries:
+                entries[msg.author.id] = (
+                    number,
+                    msg.created_at,
+                    discord.utils.escape_markdown(msg.author.display_name),
+                )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "❌ I don't have permission to read that channel's history.", ephemeral=True
+        )
+        return
+
+    if not ping_found:
+        await interaction.followup.send(
+            f"❌ I couldn't find a <@&{QCHECK_ROLE_ID}> ping in the last "
+            f"{QLIST_HISTORY_LIMIT} messages.",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
+
+    # Smallest to biggest; if two people sent the same number, whoever sent it first goes first
+    ordered = sorted(entries.values(), key=lambda e: (e[0], e[1]))
+
+    if not ordered:
+        await interaction.followup.send("**Q LIST**\nNo numbers yet.")
+        return
+
+    lines = [f"{number} - {name}" for number, _created, name in ordered]
+
+    # Split into several messages if the list is too long for one
+    chunks = []
+    current = "**Q LIST**"
+    for line in lines:
+        if len(current) + 1 + len(line) > 1900:
+            chunks.append(current)
+            current = line
+        else:
+            current += "\n" + line
+    chunks.append(current)
+
+    for chunk in chunks:
+        await interaction.followup.send(chunk, allowed_mentions=discord.AllowedMentions.none())
+
 
 if __name__ == "__main__":
     if not TOKEN:
