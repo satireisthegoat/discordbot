@@ -457,6 +457,14 @@ def is_qcheck_ping(message: discord.Message) -> bool:
     return any(role.id == QCHECK_ROLE_ID for role in message.role_mentions)
 
 
+def short_name(member: discord.abc.User) -> str:
+    """Server display name, keeping only the part before the "|".
+    "Walk | bunnislayer0" -> "Walk". If there's no "|", the whole name is used."""
+    full = member.display_name
+    left = full.split("|", 1)[0].strip()
+    return left or full.strip() or full
+
+
 @bot.tree.command(
     name="q-list",
     description="Post the sorted list of numbers sent after the latest @QCHECK ping",
@@ -509,7 +517,7 @@ async def q_list(interaction: discord.Interaction):
                 entries[msg.author.id] = (
                     number,
                     msg.created_at,
-                    discord.utils.escape_markdown(msg.author.display_name),
+                    discord.utils.escape_markdown(short_name(msg.author)),
                 )
     except discord.Forbidden:
         await interaction.followup.send(
@@ -534,7 +542,6 @@ async def q_list(interaction: discord.Interaction):
         return
 
     lines = [f"{number} - {name}" for number, _created, name in ordered]
-    # deploy
 
     # Split into several messages if the list is too long for one
     chunks = []
@@ -555,4 +562,3 @@ if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("Set the DISCORD_TOKEN environment variable first.")
     bot.run(TOKEN)
-# deploy
