@@ -491,7 +491,7 @@ async def q_list(interaction: discord.Interaction):
 
     # Walk backwards (newest first) until we reach the most recent @QCHECK ping.
     # The first number we see from each person is therefore their latest one.
-    entries: dict[int, tuple[int, object, str]] = {}
+    entries: dict[int, tuple[int, object, discord.abc.User]] = {}
     ping_found = False
 
     try:
@@ -514,11 +514,7 @@ async def q_list(interaction: discord.Interaction):
                 continue  # 0 isn't allowed
 
             if msg.author.id not in entries:
-                entries[msg.author.id] = (
-                    number,
-                    msg.created_at,
-                    discord.utils.escape_markdown(short_name(msg.author)),
-                )
+                entries[msg.author.id] = (number, msg.created_at, msg.author)
     except discord.Forbidden:
         await interaction.followup.send(
             "❌ I don't have permission to read that channel's history.", ephemeral=True
@@ -534,8 +530,21 @@ async def q_list(interaction: discord.Interaction):
         )
         return
 
+    # Messages read from history usually give us a plain User (their global display
+    # name), not the server Member (their server nickname). So look up each person as a
+    # server member to get their server display name, e.g. "Aurora | bienpatyteves".
+    named: list[tuple[int, object, str]] = []
+    for author_id, (number, created, author) in entries.items():
+        member = interaction.guild.get_member(author_id)
+        if member is None:
+            try:
+                member = await interaction.guild.fetch_member(author_id)
+            except discord.HTTPException:
+                member = author  # left the server or lookup failed: use whatever name we have
+        named.append((number, created, discord.utils.escape_markdown(short_name(member))))
+
     # Smallest to biggest; if two people sent the same number, whoever sent it first goes first
-    ordered = sorted(entries.values(), key=lambda e: (e[0], e[1]))
+    ordered = sorted(named, key=lambda e: (e[0], e[1]))
 
     if not ordered:
         await interaction.followup.send("**Q LIST**\nNo numbers yet.")
