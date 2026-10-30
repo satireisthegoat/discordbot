@@ -31,7 +31,6 @@ AUTOMOD_REPORT_CHANNEL_ID = 1561861985878937703
 RAID_ROLE_ID = 1545038660850688080
 RAID_LEADER_ROLE_ID = 1545040101929656413
 RAIDS_CHANNEL_ID = 1545037570600079390
-SOS_CHANNEL_ID = 1545037599465279548
 CHAT_CHANNEL_ID = 1534598572362961120
 RL_CHAT_CHANNEL_ID = 1545040735420555355
 UNL_WORD = re.compile(r"(?<!\w)unl(?!\w)", re.IGNORECASE)  # "unl" as its own word, any capitalization
@@ -228,7 +227,7 @@ async def forward_message(message: discord.Message, channel_id: int) -> None:
 
 async def handle_raid_call(message: discord.Message) -> None:
     """When @raid and "unl" are in the same message in the raids channel, forward it
-    to the SOS, chat and RL chat channels, then ping the raid leader role in RL chat."""
+    to the chat and RL chat channels, then ping the raid leader role in RL chat."""
     if message.guild is None or message.channel.id != RAIDS_CHANNEL_ID:
         return
     if bot.user is not None and message.author.id == bot.user.id:
@@ -238,7 +237,6 @@ async def handle_raid_call(message: discord.Message) -> None:
     if not UNL_WORD.search(message.content):
         return
 
-    await forward_message(message, SOS_CHANNEL_ID)
     await forward_message(message, CHAT_CHANNEL_ID)
     await forward_message(message, RL_CHAT_CHANNEL_ID)
 
