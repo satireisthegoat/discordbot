@@ -31,9 +31,12 @@ AUTOMOD_REPORT_CHANNEL_ID = 1561861985878937703
 RAID_ROLE_ID = 1545038660850688080
 RAID_LEADER_ROLE_ID = 1545040101929656413
 RAIDS_CHANNEL_ID = 1545037570600079390
+SOS_ROLE_ID = 1545037701336793208
+SOS_CHANNEL_ID = 1545037599465279548
 CHAT_CHANNEL_ID = 1534598572362961120
 RL_CHAT_CHANNEL_ID = 1545040735420555355
-UNL_WORD = re.compile(r"(?<!\w)unl(?!\w)", re.IGNORECASE)  # "unl" as its own word, any capitalization
+# "unl", "unleash" or "unleashed" as their own words, any capitalization
+UNL_WORD = re.compile(r"(?<!\w)(?:unl|unleash|unleashed)(?!\w)", re.IGNORECASE)
 
 # ---------- Q list ----------
 Q_CHANNEL_ID = 1560393413566930974
@@ -185,11 +188,11 @@ async def report_violation(message: discord.Message, matched: list[str], deleted
 
 
 # ---------- raid forwarding ----------
-def mentions_raid_role(message: discord.Message) -> bool:
-    """True if the message pings the @raid role."""
-    if f"<@&{RAID_ROLE_ID}>" in message.content:
+def mentions_role(message: discord.Message, role_id: int) -> bool:
+    """True if the message pings the given role."""
+    if f"<@&{role_id}>" in message.content:
         return True
-    return any(role.id == RAID_ROLE_ID for role in message.role_mentions)
+    return any(role.id == role_id for role in message.role_mentions)
 
 
 async def get_channel_by_id(channel_id: int):
@@ -226,13 +229,22 @@ async def forward_message(message: discord.Message, channel_id: int) -> None:
 
 
 async def handle_raid_call(message: discord.Message) -> None:
-    """When @raid and "unl" are in the same message in the raids channel, forward it
-    to the chat and RL chat channels, then ping the raid leader role in RL chat."""
-    if message.guild is None or message.channel.id != RAIDS_CHANNEL_ID:
+    """Raid call: @raid + unl/unleash/unleashed in the raids channel.
+    SOS call: @sos + unl/unleash/unleashed in the SOS channel.
+    Either way, forward the message to the chat and RL chat channels,
+    then ping the raid leader role in RL chat."""
+    if message.guild is None:
         return
     if bot.user is not None and message.author.id == bot.user.id:
         return  # never react to the bot's own messages
-    if not mentions_raid_role(message):
+
+    is_raid_call = (
+        message.channel.id == RAIDS_CHANNEL_ID and mentions_role(message, RAID_ROLE_ID)
+    )
+    is_sos_call = (
+        message.channel.id == SOS_CHANNEL_ID and mentions_role(message, SOS_ROLE_ID)
+    )
+    if not (is_raid_call or is_sos_call):
         return
     if not UNL_WORD.search(message.content):
         return
