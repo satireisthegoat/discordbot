@@ -27,6 +27,15 @@ BOOST_TYPES = {
 # ---------- automod ----------
 AUTOMOD_REPORT_CHANNEL_ID = 1561861985878937703
 
+# ---------- raid forwarding ----------
+RAID_ROLE_ID = 1545038660850688080
+RAID_LEADER_ROLE_ID = 1545040101929656413
+RAIDS_CHANNEL_ID = 1545037570600079390
+SOS_CHANNEL_ID = 1545037599465279548
+CHAT_CHANNEL_ID = 1534598572362961120
+RL_CHAT_CHANNEL_ID = 1545040735420555355
+UNL_WORD = re.compile(r"(?<!\w)unl(?!\w)", re.IGNORECASE)  # "unl" as its own word, any capitalization
+
 # ---------- Q list ----------
 Q_CHANNEL_ID = 1560393413566930974
 QCHECK_ROLE_ID = 1545418339696771152
@@ -176,6 +185,77 @@ async def report_violation(message: discord.Message, matched: list[str], deleted
         pass
 
 
+# ---------- raid forwarding ----------
+def mentions_raid_role(message: discord.Message) -> bool:
+    """True if the message pings the @raid role."""
+    if f"<@&{RAID_ROLE_ID}>" in message.content:
+        return True
+    return any(role.id == RAID_ROLE_ID for role in message.role_mentions)
+
+
+async def get_channel_by_id(channel_id: int):
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+    return channel
+
+
+async def forward_message(message: discord.Message, channel_id: int) -> None:
+    """Forward the message to a channel. Falls back to a plain copy if forwarding fails."""
+    channel = await get_channel_by_id(channel_id)
+    if channel is None:
+        return
+
+    try:
+        await message.forward(channel)  # native Discord forward (needs discord.py 2.5+)
+        return
+    except (AttributeError, discord.HTTPException):
+        pass
+
+    # Fallback: post a copy with the sender and a link to the original
+    text = (
+        f"**{discord.utils.escape_markdown(message.author.display_name)}** "
+        f"in {message.channel.mention}:\n{message.content}\n{message.jump_url}"
+    )
+    try:
+        await channel.send(text[:2000], allowed_mentions=discord.AllowedMentions.none())
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+
+async def handle_raid_call(message: discord.Message) -> None:
+    """When @raid and "unl" are in the same message in the raids channel, forward it
+    to the SOS, chat and RL chat channels, then ping the raid leader role in RL chat."""
+    if message.guild is None or message.channel.id != RAIDS_CHANNEL_ID:
+        return
+    if bot.user is not None and message.author.id == bot.user.id:
+        return  # never react to the bot's own messages
+    if not mentions_raid_role(message):
+        return
+    if not UNL_WORD.search(message.content):
+        return
+
+    await forward_message(message, SOS_CHANNEL_ID)
+    await forward_message(message, CHAT_CHANNEL_ID)
+    await forward_message(message, RL_CHAT_CHANNEL_ID)
+
+    # Ping the raid leader role in the RL chat channel (just the ping, no text)
+    rl_channel = await get_channel_by_id(RL_CHAT_CHANNEL_ID)
+    if rl_channel is not None:
+        try:
+            await rl_channel.send(
+                f"<@&{RAID_LEADER_ROLE_ID}>",
+                allowed_mentions=discord.AllowedMentions(
+                    roles=[discord.Object(id=RAID_LEADER_ROLE_ID)]
+                ),
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} ({bot.user.id})")
@@ -194,6 +274,9 @@ async def on_message(message: discord.Message):
     # Automod first; if it caught the message, stop here
     if await automod(message):
         return
+
+    # Forward raid "unl" calls
+    await handle_raid_call(message)
 
     await enforce(message)
 
