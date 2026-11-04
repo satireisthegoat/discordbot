@@ -690,8 +690,11 @@ def leaderboard_text(title: str, members: list, counts: dict[int, int], days: in
         lines.append(f"{zero} member(s) have 0 messages")
     for i, member in enumerate(ranked[:LEAST_TOP], start=1):
         n = counts.get(member.id, 0)
-        name = discord.utils.escape_markdown(short_name(member))
-        lines.append(f"{i}. {name} - {n} message{'s' if n != 1 else ''}")
+        line = f"{i}. {member.mention} - {n} message{'s' if n != 1 else ''}"
+        if member.joined_at is not None:
+            # Discord shows this in each viewer's own timezone
+            line += f" - joined <t:{int(member.joined_at.timestamp())}:f>"
+        lines.append(line)
     return "\n".join(lines)[:2000]
 
 
