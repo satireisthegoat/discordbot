@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from datetime import timedelta
 from pathlib import Path
 
 import discord
@@ -53,8 +54,14 @@ QLIST_ALLOWED_ROLE_IDS = {
 QLIST_HISTORY_LIMIT = 5000  # how many recent messages to scan while looking for the ping
 Q_NUMBER = re.compile(r"[0-9]+")  # whole digits only (no spaces, signs, decimals, commas)
 
+# ---------- least messages leaderboard ----------
+LEAST_ROLE_ID = 1545039435039506554  # only members with this role are ranked
+LEAST_DAYS = 14                      # default number of days to count
+LEAST_TOP = 15                       # how many people to show per leaderboard
+
 intents = discord.Intents.default()
 intents.message_content = True  # must also be enabled in the Developer Portal
+intents.members = True  # Server Members Intent: must ALSO be enabled in the Developer Portal
 
 
 # ---------- config storage ----------
@@ -658,6 +665,101 @@ async def q_list(interaction: discord.Interaction):
 
     for chunk in chunks:
         await interaction.followup.send(chunk, allowed_mentions=discord.AllowedMentions.none())
+
+
+# ---------- slash command: least messages ----------
+async def count_messages(channel, after) -> dict[int, int]:
+    """Count real-member messages per person in a channel since `after`."""
+    counts: dict[int, int] = {}
+    async for msg in channel.history(limit=None, after=after):
+        if msg.author.bot or msg.webhook_id is not None:
+            continue
+        if msg.type not in (discord.MessageType.default, discord.MessageType.reply):
+            continue
+        counts[msg.author.id] = counts.get(msg.author.id, 0) + 1
+    return counts
+
+
+def leaderboard_text(title: str, members: list, counts: dict[int, int], days: int) -> str:
+    # Fewest messages first; ties are sorted alphabetically by name
+    ranked = sorted(members, key=lambda m: (counts.get(m.id, 0), short_name(m).lower()))
+    zero = sum(1 for m in members if counts.get(m.id, 0) == 0)
+
+    lines = [f"**{title}** (last {days} days)"]
+    if zero:
+        lines.append(f"{zero} member(s) have 0 messages")
+    for i, member in enumerate(ranked[:LEAST_TOP], start=1):
+        n = counts.get(member.id, 0)
+        name = discord.utils.escape_markdown(short_name(member))
+        lines.append(f"{i}. {name} - {n} message{'s' if n != 1 else ''}")
+    return "\n".join(lines)[:2000]
+
+
+@bot.tree.command(
+    name="least-messages",
+    description="Show who has sent the fewest messages in the Q channel and the SOS channel",
+)
+@app_commands.guild_only()
+@app_commands.describe(days="How many days back to count (default 14)")
+async def least_messages(
+    interaction: discord.Interaction,
+    days: app_commands.Range[int, 1, 90] = LEAST_DAYS,
+):
+    # Same roles that can use /q-list
+    if not any(r.id in QLIST_ALLOWED_ROLE_IDS for r in getattr(interaction.user, "roles", [])):
+        await interaction.response.send_message(
+            "You don't have permission to use this command.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer()  # counting messages can take a while
+
+    guild = interaction.guild
+    role = guild.get_role(LEAST_ROLE_ID)
+    if role is None:
+        await interaction.followup.send("❌ I can't find the role to rank.", ephemeral=True)
+        return
+
+    if not guild.chunked:
+        try:
+            await guild.chunk()  # make sure the full member list is loaded
+        except discord.ClientException:
+            pass
+
+    members = [m for m in role.members if not m.bot]
+    if not members:
+        await interaction.followup.send(
+            "❌ I couldn't find any members with that role. Is the Server Members Intent "
+            "turned on in the Developer Portal?",
+            ephemeral=True,
+        )
+        return
+
+    q_channel = await get_channel_by_id(Q_CHANNEL_ID)
+    sos_channel = await get_channel_by_id(SOS_CHANNEL_ID)
+    if q_channel is None or sos_channel is None:
+        await interaction.followup.send("❌ I can't find one of the channels.", ephemeral=True)
+        return
+
+    after = discord.utils.utcnow() - timedelta(days=days)
+    try:
+        q_counts = await count_messages(q_channel, after)
+        sos_counts = await count_messages(sos_channel, after)
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "❌ I don't have permission to read one of the channels.", ephemeral=True
+        )
+        return
+
+    no_mentions = discord.AllowedMentions.none()
+    await interaction.followup.send(
+        leaderboard_text("LEAST MESSAGES - Q CHANNEL", members, q_counts, days),
+        allowed_mentions=no_mentions,
+    )
+    await interaction.followup.send(
+        leaderboard_text("LEAST MESSAGES - SOS CHANNEL", members, sos_counts, days),
+        allowed_mentions=no_mentions,
+    )
 
 
 if __name__ == "__main__":
