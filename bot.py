@@ -57,7 +57,8 @@ Q_NUMBER = re.compile(r"[0-9]+")  # whole digits only (no spaces, signs, decimal
 # ---------- least messages leaderboard ----------
 LEAST_ROLE_ID = 1545039435039506554  # only members with this role are ranked
 LEAST_DAYS = 14                      # default number of days to count
-LEAST_TOP = 15                       # how many people to show per leaderboard
+LEAST_PAGE_SIZE = 10                 # people shown per page
+LEAST_VIEW_TIMEOUT = 600             # seconds the page buttons keep working (10 minutes)
 
 intents = discord.Intents.default()
 intents.message_content = True  # must also be enabled in the Developer Portal
@@ -680,15 +681,29 @@ async def count_messages(channel, after) -> dict[int, int]:
     return counts
 
 
-def leaderboard_text(title: str, members: list, counts: dict[int, int], days: int) -> str:
-    # Fewest messages first; ties are sorted alphabetically by name
-    ranked = sorted(members, key=lambda m: (counts.get(m.id, 0), short_name(m).lower()))
-    zero = sum(1 for m in members if counts.get(m.id, 0) == 0)
+def rank_members(members: list, counts: dict[int, int]) -> list:
+    """Fewest messages first; ties are sorted alphabetically by name."""
+    return sorted(members, key=lambda m: (counts.get(m.id, 0), short_name(m).lower()))
+
+
+def page_count(total: int) -> int:
+    return max(1, (total + LEAST_PAGE_SIZE - 1) // LEAST_PAGE_SIZE)
+
+
+def render_page(title: str, ranked: list, counts: dict[int, int], days: int, page: int) -> str:
+    total = len(ranked)
+    pages = page_count(total)
+    page = max(0, min(page, pages - 1))
+    zero = sum(1 for m in ranked if counts.get(m.id, 0) == 0)
 
     lines = [f"**{title}** (last {days} days)"]
+    summary = f"Page {page + 1}/{pages} - {total} members"
     if zero:
-        lines.append(f"{zero} member(s) have 0 messages")
-    for i, member in enumerate(ranked[:LEAST_TOP], start=1):
+        summary += f" - {zero} with 0 messages"
+    lines.append(summary)
+
+    start = page * LEAST_PAGE_SIZE
+    for i, member in enumerate(ranked[start:start + LEAST_PAGE_SIZE], start=start + 1):
         n = counts.get(member.id, 0)
         line = f"{i}. {member.mention} - {n} message{'s' if n != 1 else ''}"
         if member.joined_at is not None:
@@ -696,6 +711,75 @@ def leaderboard_text(title: str, members: list, counts: dict[int, int], days: in
             line += f" - joined <t:{int(member.joined_at.timestamp())}:f>"
         lines.append(line)
     return "\n".join(lines)[:2000]
+
+
+class LeaderboardView(discord.ui.View):
+    """Leaderboard with ◀ ▶ buttons to flip between pages."""
+
+    def __init__(self, board_title: str, ranked: list, counts: dict[int, int], days: int):
+        super().__init__(timeout=LEAST_VIEW_TIMEOUT)
+        self.board_title = board_title
+        self.ranked = ranked
+        self.counts = counts
+        self.days = days
+        self.page = 0
+        self.pages = page_count(len(ranked))
+        self.message = None  # set after the message is sent
+        self._sync_buttons()
+
+    def _sync_buttons(self):
+        self.prev_button.disabled = self.page <= 0
+        self.next_button.disabled = self.page >= self.pages - 1
+
+    async def _refresh(self, interaction: discord.Interaction):
+        self._sync_buttons()
+        await interaction.response.edit_message(
+            content=render_page(self.board_title, self.ranked, self.counts, self.days, self.page),
+            view=self,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Only the roles that can use /least-messages can flip pages
+        if any(r.id in QLIST_ALLOWED_ROLE_IDS for r in getattr(interaction.user, "roles", [])):
+            return True
+        await interaction.response.send_message(
+            "You don't have permission to use these buttons.", ephemeral=True
+        )
+        return False
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = max(0, self.page - 1)
+        await self._refresh(interaction)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = min(self.pages - 1, self.page + 1)
+        await self._refresh(interaction)
+
+    async def on_timeout(self):
+        # Grey out the buttons when they expire; the page itself stays visible
+        for child in self.children:
+            child.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+
+async def send_leaderboard(
+    interaction: discord.Interaction, title: str, members: list, counts: dict[int, int], days: int
+) -> None:
+    ranked = rank_members(members, counts)
+    view = LeaderboardView(title, ranked, counts, days)
+    kwargs = {"view": view} if view.pages > 1 else {}  # no buttons needed for a single page
+    view.message = await interaction.followup.send(
+        render_page(title, ranked, counts, days, 0),
+        allowed_mentions=discord.AllowedMentions.none(),
+        **kwargs,
+    )
 
 
 @bot.tree.command(
@@ -754,15 +838,8 @@ async def least_messages(
         )
         return
 
-    no_mentions = discord.AllowedMentions.none()
-    await interaction.followup.send(
-        leaderboard_text("LEAST MESSAGES - Q CHANNEL", members, q_counts, days),
-        allowed_mentions=no_mentions,
-    )
-    await interaction.followup.send(
-        leaderboard_text("LEAST MESSAGES - SOS CHANNEL", members, sos_counts, days),
-        allowed_mentions=no_mentions,
-    )
+    await send_leaderboard(interaction, "LEAST MESSAGES - Q CHANNEL", members, q_counts, days)
+    await send_leaderboard(interaction, "LEAST MESSAGES - SOS CHANNEL", members, sos_counts, days)
 
 
 if __name__ == "__main__":
