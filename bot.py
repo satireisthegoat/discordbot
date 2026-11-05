@@ -690,6 +690,14 @@ def page_count(total: int) -> int:
     return max(1, (total + LEAST_PAGE_SIZE - 1) // LEAST_PAGE_SIZE)
 
 
+def page_mentions(ranked: list, page: int) -> discord.AllowedMentions:
+    """Lets Discord load the names of the people on this page so mentions show their
+    name instead of "@unknown-user". Only used on message EDITS, which show the names
+    without sending anyone a notification."""
+    start = max(0, page) * LEAST_PAGE_SIZE
+    return discord.AllowedMentions(users=ranked[start:start + LEAST_PAGE_SIZE])
+
+
 def render_page(title: str, ranked: list, counts: dict[int, int], days: int, page: int) -> str:
     total = len(ranked)
     pages = page_count(total)
@@ -736,7 +744,7 @@ class LeaderboardView(discord.ui.View):
         await interaction.response.edit_message(
             content=render_page(self.board_title, self.ranked, self.counts, self.days, self.page),
             view=self,
-            allowed_mentions=discord.AllowedMentions.none(),
+            allowed_mentions=page_mentions(self.ranked, self.page),
         )
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -774,12 +782,19 @@ async def send_leaderboard(
 ) -> None:
     ranked = rank_members(members, counts)
     view = LeaderboardView(title, ranked, counts, days)
+
+    # Send a placeholder first, then edit the real content in. Mentions added by an
+    # edit show people's names properly but don't send them a notification.
+    message = await interaction.followup.send(
+        "Loading leaderboard...", allowed_mentions=discord.AllowedMentions.none()
+    )
     kwargs = {"view": view} if view.pages > 1 else {}  # no buttons needed for a single page
-    view.message = await interaction.followup.send(
-        render_page(title, ranked, counts, days, 0),
-        allowed_mentions=discord.AllowedMentions.none(),
+    await message.edit(
+        content=render_page(title, ranked, counts, days, 0),
+        allowed_mentions=page_mentions(ranked, 0),
         **kwargs,
     )
+    view.message = message
 
 
 @bot.tree.command(
